@@ -34,16 +34,14 @@ def lambda_handler(event, context):
     account_id = sts.get_caller_identity()['Account']
 
     dynamodb = boto3.resource('dynamodb')
-    
-    # Check if 'logStream' is present in the log events and handle the error
-    if 'logStream' not in log_events:
-        print("Key 'logStream' not found in log events. Exiting function.")
-        return {
-            'statusCode': 400,
-            'body': json.dumps("Error: 'logStream' not found in log events.")
-        }
 
-    database_name = log_events['logStream']
+    # Try to find logStream in the log events or log metadata
+    log_stream = event.get('logStream', 'UnknownLogStream')  # Default value if logStream not present
+    print(f"Log Stream: {log_stream}")
+    
+    # Check if 'logStream' is present in the metadata or manually assign if absent
+    database_name = log_stream  # You can replace this based on your database extraction logic
+
     region = os.environ['AWS_REGION']
 
     key = {"dbName": database_name}
