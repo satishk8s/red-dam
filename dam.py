@@ -5,6 +5,11 @@ import boto3
 from datetime import datetime
 from io import BytesIO
 import gzip
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
 
 DYNAMODB_TABLE_NAME = "dam_user_filter"
 S3_BUCKET_NAME = "dam-db-audit-logs"
@@ -14,8 +19,8 @@ def lambda_handler(event, context):
     '''
     Lambda function handler
     '''
-    print(f"event - {event}")
-    
+    logger.info(f"Received event: {json.dumps(event)}")
+
     # Handle both gzipped and plain text CloudWatch Logs
     cw_data = event['awslogs']['data']
     decoded_data = base64.b64decode(cw_data, validate=True)
@@ -28,46 +33,50 @@ def lambda_handler(event, context):
         # If not GZIP, assume it's plain JSON
         log_events = json.loads(decoded_data)
 
-    print(f"decrypted event - {log_events}")
+    logger.info(f"Decrypted event: {log_events}")
 
+    # Get account ID from STS
     sts = boto3.client('sts')
     account_id = sts.get_caller_identity()['Account']
 
     dynamodb = boto3.resource('dynamodb')
 
-    # Try to find logStream in the log events or log metadata
+    # Determine log stream
     log_stream = event.get('logStream', 'UnknownLogStream')  # Default value if logStream not present
-    print(f"Log Stream: {log_stream}")
-    
-    # Check if 'logStream' is present in the metadata or manually assign if absent
-    database_name = log_stream  # You can replace this based on your database extraction logic
+    logger.info(f"Log Stream: {log_stream}")
 
-    region = os.environ['AWS_REGION']
+    # Assume database name is derived from log_stream
+    database_name = log_stream
 
+    # Fetch users from DynamoDB
     key = {"dbName": database_name}
     db_users = get_dynamo_db_item(DYNAMODB_TABLE_NAME, key, dynamodb)
-    print(f"users in database - {db_users}")
+    logger.info(f"Users in database: {db_users}")
 
-    for log_event in log_events['logEvents']:
-        query_message = log_event['message'].split(',')[-1].strip()
+    # Check if log events exist
+    if 'logEvents' in log_events:
+        for log_event in log_events['logEvents']:
+            query_message = log_event['message'].split(',')[-1].strip()
 
-        if 'Item' in db_users:
-            if 'humanUsers' in db_users['Item'] and query_message in db_users['Item']['humanUsers']:
-                dam_event = create_event(log_event, database_name, account_id)
-                filter_event(dam_event, known_user=True)
+            # Check if there are users in DynamoDB
+            if 'Item' in db_users:
+                if 'humanUsers' in db_users['Item'] and query_message in db_users['Item']['humanUsers']:
+                    dam_event = create_event(log_event, database_name, account_id)
+                    filter_event(dam_event, known_user=True)
+                else:
+                    logger.warning(f"User {query_message} is not in DynamoDB, treating as unknown user.")
+                    dam_event = create_event(log_event, database_name, account_id)
+                    filter_event(dam_event, known_user=False)
             else:
-                print(f"User {query_message} is not in DynamoDB, treating as unknown user.")
+                logger.warning("No DynamoDB entry found for this database, treating all users as unknown.")
                 dam_event = create_event(log_event, database_name, account_id)
                 filter_event(dam_event, known_user=False)
-        else:
-            # No DynamoDB entry for this database; treating all users as unknown
-            print("No DynamoDB entry found for database, treating all users as unknown.")
-            dam_event = create_event(log_event, database_name, account_id)
-            filter_event(dam_event, known_user=False)
+    else:
+        logger.error("No logEvents found in log data.")
 
 def filter_event(dam_event, known_user):
     query = dam_event['query'].lower()
-    print(f"query - {query}")
+    logger.info(f"Query - {query}")
     push_event = 0
 
     # User-related queries
@@ -80,12 +89,12 @@ def filter_event(dam_event, known_user):
 
     # Process the affected user from the query text
     if "create user" in query or "alter user" in query or "drop user" in query:
-        affected_username = query.split(' ')[2]
+        affected_username = query.split(' ')[2] if len(query.split(' ')) > 2 else "unknown"
         dam_event['affectedUser'] = [affected_username]
 
     # Upload to S3 if it's a relevant event
     if push_event == 1:
-        print("User-related query found. Publishing to S3")
+        logger.info("User-related query found. Publishing to S3")
         upload_to_s3(dam_event, known_user)
 
 def create_event(log_event, database_name, account_id):
@@ -99,25 +108,25 @@ def create_event(log_event, database_name, account_id):
     }
     dam_event.update(audit_event)
 
-    print(f"Created event: {json.dumps(dam_event)}")
+    logger.info(f"Created event: {json.dumps(dam_event)}")
     
     return dam_event
 
 def normalize_event(message):
     '''
-    Function to parse and structure a Redshift log event message
+    Function to parse and structure a log event message
     '''
     audit_event = message.split(',')
     
     dam_event = {
-        "timestamp": audit_event[0],
-        "username": audit_event[1],
-        "connectionId": audit_event[2],
-        "database": audit_event[3],
-        "query": audit_event[4],
+        "timestamp": audit_event[0] if len(audit_event) > 0 else "unknown",
+        "username": audit_event[1] if len(audit_event) > 1 else "unknown",
+        "connectionId": audit_event[2] if len(audit_event) > 2 else "unknown",
+        "database": audit_event[3] if len(audit_event) > 3 else "unknown",
+        "query": audit_event[4] if len(audit_event) > 4 else "unknown",
         "originalEvent": message
     }
-    print(f"Parsed event - {dam_event}")
+    logger.info(f"Parsed event - {dam_event}")
     return dam_event
 
 def upload_to_s3(dam_event, known_user):
@@ -141,9 +150,9 @@ def upload_to_s3(dam_event, known_user):
             Key=s3_key,
             Body=json.dumps(dam_event, default=str)
         )
-        print(f"Successfully uploaded {s3_key} to S3.")
+        logger.info(f"Successfully uploaded {s3_key} to S3.")
     except Exception as e:
-        print(f'Error saving event to S3: {str(e)}')
+        logger.error(f'Error saving event to S3: {str(e)}')
 
 def get_dynamo_db_item(table_name, key, dynamodb=None):
     '''
@@ -153,5 +162,9 @@ def get_dynamo_db_item(table_name, key, dynamodb=None):
         dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(table_name)
 
-    response = table.get_item(Key=key)
-    return response
+    try:
+        response = table.get_item(Key=key)
+        return response
+    except Exception as e:
+        logger.error(f"Failed to get item from DynamoDB: {e}")
+        return {}
