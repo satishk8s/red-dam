@@ -1,10 +1,10 @@
 import os
-import gzip
 import json
 import base64
 import boto3
 from datetime import datetime
 from io import BytesIO
+import gzip
 
 DYNAMODB_TABLE_NAME = "dam_user_filter"
 S3_BUCKET_NAME = "dam-db-audit-logs"  # Replace with your S3 bucket name
@@ -15,10 +15,19 @@ def lambda_handler(event, context):
     Lambda function handler
     '''
     print(f"event - {event}")
-    cw_data = str(event['awslogs']['data'])
-    cw_logs = gzip.GzipFile(fileobj=BytesIO(base64.b64decode(cw_data, validate=True))).read()
-    log_events = json.loads(cw_logs)
     
+    # Handle both gzipped and plain text CloudWatch Logs
+    cw_data = event['awslogs']['data']
+    decoded_data = base64.b64decode(cw_data, validate=True)
+    
+    try:
+        # Try to decompress as GZIP
+        cw_logs = gzip.GzipFile(fileobj=BytesIO(decoded_data)).read()
+        log_events = json.loads(cw_logs)
+    except gzip.BadGzipFile:
+        # If not GZIP, assume it's plain JSON
+        log_events = json.loads(decoded_data)
+
     print(f"decrypted event - {log_events}")
 
     sts = boto3.client('sts')
@@ -84,7 +93,6 @@ def create_event(log_event, database_name, account_id):
     }
     dam_event.update(audit_event)
 
-    # Do not upload to S3 here; filtering will decide whether to upload
     print(f"Created event: {json.dumps(dam_event)}")
     
     return dam_event
