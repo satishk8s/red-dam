@@ -1,0 +1,35 @@
+{
+  "dbName": {
+    "S": "dam-test"
+  },
+  "adminUsers": {
+    "L": [
+      {
+        "S": "rdsdb"
+      },
+      {
+        "S": "awsuser"
+      }
+    ]
+  },
+  "appUsers": {
+    "L": [
+      {
+        "S": "test123"
+      },
+      {
+        "S": "testabz"
+      }
+    ]
+  },
+  "humanUsers": {
+    "L": [
+      {
+        "S": "uppin"
+      },
+      {
+        "S": "satish"
+      }
+    ]
+  }
+}
