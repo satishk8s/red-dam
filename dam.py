@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
 DYNAMODB_TABLE_NAME = "dam_user_filter"
-S3_BUCKET_NAME = "dam-db-audit-logs"
+S3_BUCKET_NAME = "redshift-uppin"
 s3_client = boto3.client('s3')
 
 def lambda_handler(event, context):
