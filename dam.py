@@ -7,7 +7,7 @@ from io import BytesIO
 import gzip
 
 DYNAMODB_TABLE_NAME = "dam_user_filter"
-S3_BUCKET_NAME = "dam-db-audit-logs"  # Replace with your S3 bucket name
+S3_BUCKET_NAME = "dam-db-audit-logs"
 s3_client = boto3.client('s3')
 
 def lambda_handler(event, context):
@@ -35,6 +35,14 @@ def lambda_handler(event, context):
 
     dynamodb = boto3.resource('dynamodb')
     
+    # Check if 'logStream' is present in the log events and handle the error
+    if 'logStream' not in log_events:
+        print("Key 'logStream' not found in log events. Exiting function.")
+        return {
+            'statusCode': 400,
+            'body': json.dumps("Error: 'logStream' not found in log events.")
+        }
+
     database_name = log_events['logStream']
     region = os.environ['AWS_REGION']
 
