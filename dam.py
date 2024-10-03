@@ -56,20 +56,30 @@ def lambda_handler(event, context):
     # Check if log events exist
     if 'logEvents' in log_events:
         for log_event in log_events['logEvents']:
-            query_message = log_event['message'].split(',')[-1].strip()
-
+            message = log_event['message'].strip()
+            logger.info(f"Processing log message: {message}")
+            
+            query_message = message.split('|')[1].strip()  # Extracting the username from the log message
+            
             # Check if there are users in DynamoDB
             if 'Item' in db_users:
-                if 'humanUsers' in db_users['Item'] and query_message in db_users['Item']['humanUsers']:
-                    dam_event = create_event(log_event, database_name, account_id)
-                    filter_event(dam_event, known_user=True)
+                if 'humanUsers' in db_users['Item']:
+                    human_users = [user['S'] for user in db_users['Item']['humanUsers']['L']]
+                    
+                    if query_message in human_users:
+                        dam_event = create_event(message, database_name, account_id)
+                        filter_event(dam_event, known_user=True)
+                    else:
+                        logger.warning(f"User {query_message} is not in DynamoDB, treating as unknown user.")
+                        dam_event = create_event(message, database_name, account_id)
+                        filter_event(dam_event, known_user=False)
                 else:
-                    logger.warning(f"User {query_message} is not in DynamoDB, treating as unknown user.")
-                    dam_event = create_event(log_event, database_name, account_id)
+                    logger.warning("No human users found in DynamoDB, treating all users as unknown.")
+                    dam_event = create_event(message, database_name, account_id)
                     filter_event(dam_event, known_user=False)
             else:
                 logger.warning("No DynamoDB entry found for this database, treating all users as unknown.")
-                dam_event = create_event(log_event, database_name, account_id)
+                dam_event = create_event(message, database_name, account_id)
                 filter_event(dam_event, known_user=False)
     else:
         logger.error("No logEvents found in log data.")
@@ -97,14 +107,14 @@ def filter_event(dam_event, known_user):
         logger.info("User-related query found. Publishing to S3")
         upload_to_s3(dam_event, known_user)
 
-def create_event(log_event, database_name, account_id):
-    audit_event = normalize_event(log_event['message'])
+def create_event(message, database_name, account_id):
+    audit_event = normalize_event(message)
     
     dam_event = {
         "region": os.environ['AWS_REGION'],
         "databaseName": database_name,
         "accountId": account_id,
-        "messageId": log_event['id']
+        "messageId": f"{datetime.now().timestamp()}"  # Generating a unique message ID
     }
     dam_event.update(audit_event)
 
@@ -116,10 +126,10 @@ def normalize_event(message):
     '''
     Function to parse and structure a log event message
     '''
-    audit_event = message.split(',')
+    audit_event = message.split('|')
     
     dam_event = {
-        "timestamp": audit_event[0] if len(audit_event) > 0 else "unknown",
+        "timestamp": audit_event[9] if len(audit_event) > 9 else "unknown",
         "username": audit_event[1] if len(audit_event) > 1 else "unknown",
         "connectionId": audit_event[2] if len(audit_event) > 2 else "unknown",
         "database": audit_event[3] if len(audit_event) > 3 else "unknown",
