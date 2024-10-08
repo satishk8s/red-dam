@@ -11,8 +11,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
-DYNAMODB_TABLE_NAME = "dam_user_filter"
-S3_BUCKET_NAME = "redshift-uppin"
+DYNAMODB_TABLE_NAME = "dam_user_filter"  # Your DynamoDB table name
+S3_BUCKET_NAME = "redshift-uppin"  # Your S3 bucket name
 s3_client = boto3.client('s3')
 
 def lambda_handler(event, context):
@@ -46,8 +46,6 @@ def lambda_handler(event, context):
     sts = boto3.client('sts')
     account_id = sts.get_caller_identity()['Account']
 
-    dynamodb = boto3.resource('dynamodb')
-
     # Determine log stream
     log_stream = event.get('logStream', 'UnknownLogStream')
     logger.info(f"Log Stream: {log_stream}")
@@ -56,7 +54,7 @@ def lambda_handler(event, context):
     database_name = log_stream
 
     # Fetch users from DynamoDB
-    db_users = get_dynamo_db_item(DYNAMODB_TABLE_NAME, {"dbName": database_name}, dynamodb)
+    db_users = get_dynamo_db_item(DYNAMODB_TABLE_NAME, {"dbName": database_name})
     logger.info(f"Users in database: {db_users}")
 
     # Process log events
@@ -72,12 +70,11 @@ def decode_and_decompress(decoded_data):
         cw_logs = gzip.GzipFile(fileobj=BytesIO(decoded_data)).read()
         return json.loads(cw_logs)
     except gzip.BadGzipFile:
-        # If not GZIP, assume it's plain JSON
-        try:
-            return json.loads(decoded_data)
-        except Exception as e:
-            logger.error(f"Error parsing JSON data: {str(e)}")
-            return None
+        # If not GZIP, assume it's plain text
+        return {'logEvents': [{'message': decoded_data.decode('utf-8')}]}
+    except Exception as e:
+        logger.error(f"Error parsing JSON data: {str(e)}")
+        return None
 
 def process_log_events(log_events, database_name, account_id, db_users):
     """
@@ -96,7 +93,7 @@ def process_log_events(log_events, database_name, account_id, db_users):
         # Check if there are users in DynamoDB
         if 'Item' in db_users:
             if 'humanUsers' in db_users['Item']:
-                human_users = {user['S'] for user in db_users['Item']['humanUsers']['L']}  # Using a set for faster lookup
+                human_users = [user['S'] for user in db_users['Item']['humanUsers']['L']]
                 
                 if query_message in human_users:
                     dam_event = create_event(message, database_name, account_id)
@@ -130,7 +127,7 @@ def filter_event(dam_event, known_user):
     """
     query = dam_event['query'].lower()
     logger.info(f"Query - {query}")
-    push_event = False
+    push_event = 0
 
     # User-related queries
     user_related_queries = ["create user", "alter user", "drop user", "grant", "revoke", "rename user"]
@@ -138,15 +135,15 @@ def filter_event(dam_event, known_user):
     # Check if the query is user-related
     if any(q in query for q in user_related_queries):
         dam_event['queryType'] = "User Management"
-        push_event = True
+        push_event = 1
 
-        # Process the affected user from the query text
-        if "create user" in query or "alter user" in query or "drop user" in query:
-            affected_username = query.split(' ')[2] if len(query.split(' ')) > 2 else "unknown"
-            dam_event['affectedUser'] = [affected_username]
+    # Process the affected user from the query text
+    if "create user" in query or "alter user" in query or "drop user" in query:
+        affected_username = query.split(' ')[2] if len(query.split(' ')) > 2 else "unknown"
+        dam_event['affectedUser'] = [affected_username]
 
     # Upload to S3 if it's a relevant event
-    if push_event:
+    if push_event == 1:
         logger.info("User-related query found. Publishing to S3")
         upload_to_s3(dam_event, known_user)
 
@@ -210,12 +207,11 @@ def upload_to_s3(dam_event, known_user):
     except Exception as e:
         logger.error(f'Error saving event to S3: {str(e)}')
 
-def get_dynamo_db_item(table_name, key, dynamodb=None):
+def get_dynamo_db_item(table_name, key):
     """
     Get item from given DynamoDB table and key.
     """
-    if dynamodb is None:
-        dynamodb = boto3.resource('dynamodb')
+    dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(table_name)
 
     try:
