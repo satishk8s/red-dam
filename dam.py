@@ -67,7 +67,8 @@ def decode_and_decompress(decoded_data):
     """
     try:
         # Try to decompress as GZIP
-        cw_logs = gzip.GzipFile(fileobj=BytesIO(decoded_data)).read()
+        with gzip.GzipFile(fileobj=BytesIO(decoded_data)) as f:
+            cw_logs = f.read()
         return json.loads(cw_logs)
     except gzip.BadGzipFile:
         # If not GZIP, assume it's plain text
@@ -84,6 +85,12 @@ def process_log_events(log_events, database_name, account_id, db_users):
         logger.error("No logEvents found in log data.")
         return
 
+    human_users = []
+    if 'Item' in db_users and 'humanUsers' in db_users['Item']:
+        human_users = [user['S'] for user in db_users['Item']['humanUsers']['L']]
+    else:
+        logger.warning("No human users found in DynamoDB, treating all users as unknown.")
+
     for log_event in log_events['logEvents']:
         message = log_event['message'].strip()
         logger.info(f"Processing log message: {message}")
@@ -96,26 +103,9 @@ def process_log_events(log_events, database_name, account_id, db_users):
             logger.warning("Log message format is incorrect, skipping.")
             continue
 
-        # Check if there are users in DynamoDB
-        if 'Item' in db_users:
-            if 'humanUsers' in db_users['Item']:
-                human_users = [user['S'] for user in db_users['Item']['humanUsers']['L']]
-                
-                if query_message in human_users:
-                    dam_event = create_event(message, database_name, account_id)
-                    filter_event(dam_event, known_user=True)
-                else:
-                    logger.warning(f"User {query_message} is not in DynamoDB, treating as unknown user.")
-                    dam_event = create_event(message, database_name, account_id)
-                    filter_event(dam_event, known_user=False)
-            else:
-                logger.warning("No human users found in DynamoDB, treating all users as unknown.")
-                dam_event = create_event(message, database_name, account_id)
-                filter_event(dam_event, known_user=False)
-        else:
-            logger.warning("No DynamoDB entry found for this database, treating all users as unknown.")
-            dam_event = create_event(message, database_name, account_id)
-            filter_event(dam_event, known_user=False)
+        known_user = query_message in human_users
+        dam_event = create_event(message, database_name, account_id)
+        filter_event(dam_event, known_user)
 
 def is_base64(data):
     """
@@ -133,7 +123,6 @@ def filter_event(dam_event, known_user):
     """
     query = dam_event['query'].lower()
     logger.info(f"Query - {query}")
-    push_event = 0
 
     # User-related queries
     user_related_queries = ["create user", "alter user", "drop user", "grant", "revoke", "rename user"]
@@ -141,15 +130,10 @@ def filter_event(dam_event, known_user):
     # Check if the query is user-related
     if any(q in query for q in user_related_queries):
         dam_event['queryType'] = "User Management"
-        push_event = 1
-
-    # Process the affected user from the query text
-    if "create user" in query or "alter user" in query or "drop user" in query:
         affected_username = query.split(' ')[2] if len(query.split(' ')) > 2 else "unknown"
         dam_event['affectedUser'] = [affected_username]
 
-    # Upload to S3 if it's a relevant event
-    if push_event == 1:
+        # Upload to S3 if it's a relevant event
         logger.info("User-related query found. Publishing to S3")
         upload_to_s3(dam_event, known_user)
 
