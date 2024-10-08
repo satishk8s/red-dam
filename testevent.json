@@ -1,0 +1,5 @@
+{
+  "awslogs": {
+    "data": "H4sIAAAAAAAAAK1UWU/cMAz9L5bPbTbITTDkgAl4gj2NgAxJ2mFrNVqlYkm1tBYtlRU...=="  // Replace this with real encoded CloudWatch log data.
+  }
+}
