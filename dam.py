@@ -96,7 +96,7 @@ def process_log_events(log_events, database_name, account_id, db_users):
         # Check if there are users in DynamoDB
         if 'Item' in db_users:
             if 'humanUsers' in db_users['Item']:
-                human_users = [user['S'] for user in db_users['Item']['humanUsers']['L']]
+                human_users = {user['S'] for user in db_users['Item']['humanUsers']['L']}  # Using a set for faster lookup
                 
                 if query_message in human_users:
                     dam_event = create_event(message, database_name, account_id)
@@ -130,7 +130,7 @@ def filter_event(dam_event, known_user):
     """
     query = dam_event['query'].lower()
     logger.info(f"Query - {query}")
-    push_event = 0
+    push_event = False
 
     # User-related queries
     user_related_queries = ["create user", "alter user", "drop user", "grant", "revoke", "rename user"]
@@ -138,15 +138,15 @@ def filter_event(dam_event, known_user):
     # Check if the query is user-related
     if any(q in query for q in user_related_queries):
         dam_event['queryType'] = "User Management"
-        push_event = 1
+        push_event = True
 
-    # Process the affected user from the query text
-    if "create user" in query or "alter user" in query or "drop user" in query:
-        affected_username = query.split(' ')[2] if len(query.split(' ')) > 2 else "unknown"
-        dam_event['affectedUser'] = [affected_username]
+        # Process the affected user from the query text
+        if "create user" in query or "alter user" in query or "drop user" in query:
+            affected_username = query.split(' ')[2] if len(query.split(' ')) > 2 else "unknown"
+            dam_event['affectedUser'] = [affected_username]
 
     # Upload to S3 if it's a relevant event
-    if push_event == 1:
+    if push_event:
         logger.info("User-related query found. Publishing to S3")
         upload_to_s3(dam_event, known_user)
 
