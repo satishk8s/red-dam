@@ -87,9 +87,15 @@ def process_log_events(log_events, database_name, account_id, db_users):
     for log_event in log_events['logEvents']:
         message = log_event['message'].strip()
         logger.info(f"Processing log message: {message}")
-        
-        query_message = message.split('|')[1].strip()  # Extracting the username from the log message
-        
+
+        # Ensure we don't split beyond available indices
+        parts = message.split('|')
+        if len(parts) > 1:
+            query_message = parts[1].strip()  # Extracting the username from the log message
+        else:
+            logger.warning("Log message format is incorrect, skipping.")
+            continue
+
         # Check if there are users in DynamoDB
         if 'Item' in db_users:
             if 'humanUsers' in db_users['Item']:
