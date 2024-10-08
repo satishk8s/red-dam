@@ -16,12 +16,14 @@ S3_BUCKET_NAME = "redshift-uppin"
 s3_client = boto3.client('s3')
 
 def lambda_handler(event, context):
-    '''
-    Lambda function handler
-    '''
+    """
+    Lambda function handler.
+    Processes CloudWatch Logs data, extracts usernames, checks against DynamoDB,
+    and uploads relevant events to S3.
+    """
     logger.info(f"Received event: {json.dumps(event)}")
 
-    # Check for base64 encoding and handle any errors
+    # Check for base64 encoding
     cw_data = event['awslogs']['data']
     
     if not is_base64(cw_data):
@@ -34,19 +36,11 @@ def lambda_handler(event, context):
         logger.error(f"Error decoding base64 data: {str(e)}")
         return {"error": f"Error decoding base64 data: {str(e)}"}
 
-    try:
-        # Try to decompress as GZIP
-        cw_logs = gzip.GzipFile(fileobj=BytesIO(decoded_data)).read()
-        log_events = json.loads(cw_logs)
-    except gzip.BadGzipFile:
-        # If not GZIP, assume it's plain JSON
-        try:
-            log_events = json.loads(decoded_data)
-        except Exception as e:
-            logger.error(f"Error parsing JSON data: {str(e)}")
-            return {"error": f"Error parsing JSON data: {str(e)}"}
+    # Attempt to decompress GZIP data
+    log_events = decode_and_decompress(decoded_data)
 
-    logger.info(f"Decrypted event: {log_events}")
+    if log_events is None:
+        return {"error": "Failed to parse log events."}
 
     # Get account ID from STS
     sts = boto3.client('sts')
@@ -55,60 +49,85 @@ def lambda_handler(event, context):
     dynamodb = boto3.resource('dynamodb')
 
     # Determine log stream
-    log_stream = event.get('logStream', 'UnknownLogStream')  # Default value if logStream not present
+    log_stream = event.get('logStream', 'UnknownLogStream')
     logger.info(f"Log Stream: {log_stream}")
 
     # Assume database name is derived from log_stream
     database_name = log_stream
 
     # Fetch users from DynamoDB
-    key = {"dbName": database_name}
-    db_users = get_dynamo_db_item(DYNAMODB_TABLE_NAME, key, dynamodb)
+    db_users = get_dynamo_db_item(DYNAMODB_TABLE_NAME, {"dbName": database_name}, dynamodb)
     logger.info(f"Users in database: {db_users}")
 
-    # Check if log events exist
-    if 'logEvents' in log_events:
-        for log_event in log_events['logEvents']:
-            message = log_event['message'].strip()
-            logger.info(f"Processing log message: {message}")
-            
-            query_message = message.split('|')[1].strip()  # Extracting the username from the log message
-            
-            # Check if there are users in DynamoDB
-            if 'Item' in db_users:
-                if 'humanUsers' in db_users['Item']:
-                    human_users = [user['S'] for user in db_users['Item']['humanUsers']['L']]
-                    
-                    if query_message in human_users:
-                        dam_event = create_event(message, database_name, account_id)
-                        filter_event(dam_event, known_user=True)
-                    else:
-                        logger.warning(f"User {query_message} is not in DynamoDB, treating as unknown user.")
-                        dam_event = create_event(message, database_name, account_id)
-                        filter_event(dam_event, known_user=False)
+    # Process log events
+    process_log_events(log_events, database_name, account_id, db_users)
+
+def decode_and_decompress(decoded_data):
+    """
+    Attempt to decompress data, trying GZIP first.
+    If that fails, assume plain JSON.
+    """
+    try:
+        # Try to decompress as GZIP
+        cw_logs = gzip.GzipFile(fileobj=BytesIO(decoded_data)).read()
+        return json.loads(cw_logs)
+    except gzip.BadGzipFile:
+        # If not GZIP, assume it's plain JSON
+        try:
+            return json.loads(decoded_data)
+        except Exception as e:
+            logger.error(f"Error parsing JSON data: {str(e)}")
+            return None
+
+def process_log_events(log_events, database_name, account_id, db_users):
+    """
+    Process each log event, checking for known users and filtering events.
+    """
+    if 'logEvents' not in log_events:
+        logger.error("No logEvents found in log data.")
+        return
+
+    for log_event in log_events['logEvents']:
+        message = log_event['message'].strip()
+        logger.info(f"Processing log message: {message}")
+        
+        query_message = message.split('|')[1].strip()  # Extracting the username from the log message
+        
+        # Check if there are users in DynamoDB
+        if 'Item' in db_users:
+            if 'humanUsers' in db_users['Item']:
+                human_users = [user['S'] for user in db_users['Item']['humanUsers']['L']]
+                
+                if query_message in human_users:
+                    dam_event = create_event(message, database_name, account_id)
+                    filter_event(dam_event, known_user=True)
                 else:
-                    logger.warning("No human users found in DynamoDB, treating all users as unknown.")
+                    logger.warning(f"User {query_message} is not in DynamoDB, treating as unknown user.")
                     dam_event = create_event(message, database_name, account_id)
                     filter_event(dam_event, known_user=False)
             else:
-                logger.warning("No DynamoDB entry found for this database, treating all users as unknown.")
+                logger.warning("No human users found in DynamoDB, treating all users as unknown.")
                 dam_event = create_event(message, database_name, account_id)
                 filter_event(dam_event, known_user=False)
-    else:
-        logger.error("No logEvents found in log data.")
+        else:
+            logger.warning("No DynamoDB entry found for this database, treating all users as unknown.")
+            dam_event = create_event(message, database_name, account_id)
+            filter_event(dam_event, known_user=False)
 
 def is_base64(data):
-    '''
+    """
     Check if the provided data is valid base64-encoded.
-    '''
+    """
     try:
-        # Try to decode the data
         base64.b64decode(data, validate=True)
         return True
     except Exception:
         return False
 
 def filter_event(dam_event, known_user):
+    """
+    Filter event based on query type and upload to S3 if relevant.
+    """
     query = dam_event['query'].lower()
     logger.info(f"Query - {query}")
     push_event = 0
@@ -132,6 +151,9 @@ def filter_event(dam_event, known_user):
         upload_to_s3(dam_event, known_user)
 
 def create_event(message, database_name, account_id):
+    """
+    Create an event from the log message.
+    """
     audit_event = normalize_event(message)
     
     dam_event = {
@@ -147,9 +169,9 @@ def create_event(message, database_name, account_id):
     return dam_event
 
 def normalize_event(message):
-    '''
-    Function to parse and structure a log event message
-    '''
+    """
+    Function to parse and structure a log event message.
+    """
     audit_event = message.split('|')
     
     dam_event = {
@@ -164,9 +186,9 @@ def normalize_event(message):
     return dam_event
 
 def upload_to_s3(dam_event, known_user):
-    '''
-    Uploads event to S3 bucket with folder structure db_name/year/month/day/
-    '''
+    """
+    Uploads event to S3 bucket with folder structure db_name/year/month/day/.
+    """
     try:
         now = datetime.now()
         year = now.strftime('%Y')
@@ -189,9 +211,9 @@ def upload_to_s3(dam_event, known_user):
         logger.error(f'Error saving event to S3: {str(e)}')
 
 def get_dynamo_db_item(table_name, key, dynamodb=None):
-    '''
-    Get item from given DynamoDB table and key
-    '''
+    """
+    Get item from given DynamoDB table and key.
+    """
     if dynamodb is None:
         dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(table_name)
