@@ -21,17 +21,30 @@ def lambda_handler(event, context):
     '''
     logger.info(f"Received event: {json.dumps(event)}")
 
-    # Handle both gzipped and plain text CloudWatch Logs
+    # Check for base64 encoding and handle any errors
     cw_data = event['awslogs']['data']
-    decoded_data = base64.b64decode(cw_data, validate=True)
     
+    if not is_base64(cw_data):
+        logger.error("Provided data is not base64-encoded")
+        return {"error": "Provided data is not base64-encoded"}
+
+    try:
+        decoded_data = base64.b64decode(cw_data, validate=True)
+    except Exception as e:
+        logger.error(f"Error decoding base64 data: {str(e)}")
+        return {"error": f"Error decoding base64 data: {str(e)}"}
+
     try:
         # Try to decompress as GZIP
         cw_logs = gzip.GzipFile(fileobj=BytesIO(decoded_data)).read()
         log_events = json.loads(cw_logs)
     except gzip.BadGzipFile:
         # If not GZIP, assume it's plain JSON
-        log_events = json.loads(decoded_data)
+        try:
+            log_events = json.loads(decoded_data)
+        except Exception as e:
+            logger.error(f"Error parsing JSON data: {str(e)}")
+            return {"error": f"Error parsing JSON data: {str(e)}"}
 
     logger.info(f"Decrypted event: {log_events}")
 
@@ -83,6 +96,17 @@ def lambda_handler(event, context):
                 filter_event(dam_event, known_user=False)
     else:
         logger.error("No logEvents found in log data.")
+
+def is_base64(data):
+    '''
+    Check if the provided data is valid base64-encoded.
+    '''
+    try:
+        # Try to decode the data
+        base64.b64decode(data, validate=True)
+        return True
+    except Exception:
+        return False
 
 def filter_event(dam_event, known_user):
     query = dam_event['query'].lower()
