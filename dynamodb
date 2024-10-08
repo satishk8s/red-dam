@@ -1,0 +1,10 @@
+{
+  "dbName": "redshift_db_name",
+  "humanUsers": {
+    "L": [
+      { "S": "user1" },
+      { "S": "user2" },
+      { "S": "user3" }
+    ]
+  }
+}
