@@ -11,3 +11,5 @@ compressed_data = gzip.compress(log_data.encode('utf-8'))
 base64_encoded_data = base64.b64encode(compressed_data).decode('utf-8')
 
 print(base64_encoded_data)
+
+#H4sIAFV/BmcC/x3COxKAIAwFwKvkABb5AI9wCUtrVAotGcoc3hlnVzjF25/zmRQU1xx9DQr+uaoZlK3UnIBcGSEMA5KjhFfL5nGMeyOn/VqkrIlEm5SmtUnGBzjdod5eAAAA
